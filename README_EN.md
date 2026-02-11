@@ -36,6 +36,19 @@ python timer_app.py
   - State (`Running` / `Paused` / `Finished`)
   - Start / Pause / Cancel
 
+### Screenshots
+
+#### Main UI
+<img src="images/main_ui.png" width="900" alt="Main UI">
+
+The main window shows all timers in a scrollable list. You can edit *Remaining* and *End Time* by clicking them.
+
+#### Finish Alert
+<img src="images/alert_fullscreen.png" width="900" alt="Finish Alert">
+
+When a timer reaches zero, a centered horizontal alert band appears on top of all windows.  
+Dismiss with **ESC / Enter / Click**.
+
 ## 5. Adding Timers
 `Time` accepts the following formats:
 

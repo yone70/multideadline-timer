@@ -36,6 +36,19 @@ python timer_app.py
   - State（Running / Paused / Finished）
   - Start / Pause / Cancel
 
+### スクリーンショット
+
+#### メイン画面
+<img src="images/main_ui.png" width="900" alt="メイン画面">
+
+**JP:** 複数タイマーを一覧（スクロール可）で管理します。*Remaining* と *End Time* はクリックして編集できます。
+
+#### 終了アラート
+<img src="images/alert_fullscreen.png" width="900" alt="終了アラート">
+
+**JP:** タイマー満了時に、画面中央へ横長の帯メッセージを最前面表示します。  
+解除は **ESC / Enter / クリック** です。  
+
 ## 5. タイマーの追加
 `Time` は以下形式で入力できます。
 
