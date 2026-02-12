@@ -63,6 +63,7 @@ class TimerItem:
     remaining_var: tk.StringVar | None = field(default=None, repr=False)
     end_var: tk.StringVar | None = field(default=None, repr=False)
     state_var: tk.StringVar | None = field(default=None, repr=False)
+    drag_handle: ttk.Label | None = field(default=None, repr=False)
 
 
 class TimerApp:
@@ -77,6 +78,7 @@ class TimerApp:
         self.state_dirty = False
 
         self.timers: dict[str, TimerItem] = {}
+        self.timer_order: list[str] = []
         self.pending_alerts: list[TimerItem] = []
         self.current_alert_window: tk.Toplevel | None = None
         self.current_alert_timer: TimerItem | None = None
@@ -87,6 +89,8 @@ class TimerApp:
         self.reset_input_var = tk.StringVar()
         self.add_label_entry: ttk.Entry | None = None
         self.add_time_entry: ttk.Entry | None = None
+        self.dragging_timer_id: str | None = None
+        self.drop_effect_job: str | None = None
 
         self.input_var = tk.StringVar()
         self.label_input_var = tk.StringVar(value="Timer")
@@ -185,6 +189,7 @@ class TimerApp:
             preset_absolute=normalized_value if parsed_mode == "absolute" else None,
         )
         self.timers[item.timer_id] = item
+        self.timer_order.append(item.timer_id)
         self._create_row(item)
         self._mark_dirty()
 
@@ -235,8 +240,17 @@ class TimerApp:
         item.end_var = tk.StringVar(value=self._format_end_time(item.end_time))
         item.state_var = tk.StringVar(value=item.state)
 
-        label_entry = ttk.Entry(row, textvariable=item.label_var)
-        label_entry.grid(row=0, column=0, sticky="we", padx=4)
+        label_cell = ttk.Frame(row)
+        label_cell.grid(row=0, column=0, sticky="we", padx=4)
+        label_cell.columnconfigure(1, weight=1)
+
+        drag_handle = ttk.Label(label_cell, text="::", cursor="fleur", width=3, anchor="center")
+        drag_handle.grid(row=0, column=0, padx=(0, 4))
+        item.drag_handle = drag_handle
+        self._bind_drag_events(drag_handle, item.timer_id)
+
+        label_entry = ttk.Entry(label_cell, textvariable=item.label_var)
+        label_entry.grid(row=0, column=1, sticky="we")
         label_entry.bind("<FocusOut>", lambda _e, tid=item.timer_id: self._sync_label(tid))
         label_entry.bind("<Return>", lambda _e, tid=item.timer_id: self._sync_label(tid))
 
@@ -263,6 +277,103 @@ class TimerApp:
         ttk.Button(btns, text="Start", command=lambda tid=item.timer_id: self.start_timer(tid)).pack(side="left", padx=(0, 4))
         ttk.Button(btns, text="Pause", command=lambda tid=item.timer_id: self.pause_timer(tid)).pack(side="left", padx=(0, 4))
         ttk.Button(btns, text="Remove", command=lambda tid=item.timer_id: self.cancel_timer(tid)).pack(side="left")
+
+    def _bind_drag_events(self, widget: tk.Widget, timer_id: str) -> None:
+        widget.bind("<ButtonPress-1>", lambda event, tid=timer_id: self._on_drag_start(event, tid))
+        widget.bind("<B1-Motion>", self._on_drag_motion)
+        widget.bind("<ButtonRelease-1>", self._on_drag_end)
+
+    def _on_drag_start(self, _event: tk.Event, timer_id: str) -> None:
+        self.dragging_timer_id = timer_id
+        item = self.timers.get(timer_id)
+        if item:
+            self._set_row_lifted(item, True)
+
+    def _on_drag_motion(self, event: tk.Event) -> None:
+        timer_id = self.dragging_timer_id
+        if not timer_id or timer_id not in self.timer_order:
+            return
+        target_index = self._target_index_from_pointer(event.y_root)
+        self._move_timer_to_index(timer_id, target_index)
+
+    def _on_drag_end(self, _event: tk.Event) -> None:
+        timer_id = self.dragging_timer_id
+        self.dragging_timer_id = None
+        if not timer_id:
+            return
+        item = self.timers.get(timer_id)
+        if item:
+            self._play_drop_effect(item)
+
+    def _target_index_from_pointer(self, y_root: int) -> int:
+        for idx, tid in enumerate(self.timer_order):
+            item = self.timers.get(tid)
+            row = item.row_frame if item else None
+            if not row or not row.winfo_exists():
+                continue
+            midpoint = row.winfo_rooty() + (row.winfo_height() // 2)
+            if y_root < midpoint:
+                return idx
+        return len(self.timer_order)
+
+    def _move_timer_to_index(self, timer_id: str, target_index: int) -> None:
+        old_index = self.timer_order.index(timer_id)
+        if old_index == target_index or old_index + 1 == target_index:
+            return
+
+        self.timer_order.pop(old_index)
+        if target_index > old_index:
+            target_index -= 1
+        target_index = max(0, min(target_index, len(self.timer_order)))
+        self.timer_order.insert(target_index, timer_id)
+        self._repack_rows_by_order()
+        self._mark_dirty()
+
+    def _repack_rows_by_order(self) -> None:
+        for tid in self.timer_order:
+            item = self.timers.get(tid)
+            row = item.row_frame if item else None
+            if not row or not row.winfo_exists():
+                continue
+            row.pack_forget()
+            row.pack(fill="x")
+
+    def _set_row_lifted(self, item: TimerItem, lifted: bool) -> None:
+        row = item.row_frame
+        if not row or not row.winfo_exists():
+            return
+        if lifted:
+            row.configure(relief="raised", borderwidth=2, padding=(8, 8))
+            if item.drag_handle and item.drag_handle.winfo_exists():
+                item.drag_handle.configure(text="[::]", cursor="fleur")
+        else:
+            row.configure(relief="flat", borderwidth=0, padding=(4, 4))
+            if item.drag_handle and item.drag_handle.winfo_exists():
+                item.drag_handle.configure(text="::", cursor="fleur")
+
+    def _play_drop_effect(self, item: TimerItem) -> None:
+        row = item.row_frame
+        if not row or not row.winfo_exists():
+            return
+
+        if self.drop_effect_job:
+            try:
+                self.root.after_cancel(self.drop_effect_job)
+            except tk.TclError:
+                pass
+            self.drop_effect_job = None
+
+        row.configure(relief="sunken", borderwidth=2, padding=(8, 6))
+        if item.drag_handle and item.drag_handle.winfo_exists():
+            item.drag_handle.configure(text="::")
+        self.drop_effect_job = self.root.after(120, lambda: self._clear_drop_effect(item.timer_id))
+
+    def _clear_drop_effect(self, timer_id: str) -> None:
+        self.drop_effect_job = None
+        item = self.timers.get(timer_id)
+        if not item:
+            return
+        self._set_row_lifted(item, False)
 
     def _sync_label(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
@@ -339,6 +450,7 @@ class TimerApp:
         item = self.timers.pop(timer_id, None)
         if not item:
             return
+        self.timer_order = [tid for tid in self.timer_order if tid != timer_id]
 
         if item.row_frame and item.row_frame.winfo_exists():
             item.row_frame.destroy()
@@ -356,7 +468,10 @@ class TimerApp:
     def _tick(self) -> None:
         now = dt.datetime.now()
 
-        for item in list(self.timers.values()):
+        for tid in list(self.timer_order):
+            item = self.timers.get(tid)
+            if not item:
+                continue
             self._sync_label(item.timer_id)
             if item.state == "Running" and item.end_time:
                 remaining = (item.end_time - now).total_seconds()
@@ -628,7 +743,13 @@ class TimerApp:
         }
 
     def _save_state(self) -> None:
-        payload = {"timers": [self._serialize_timer(item) for item in self.timers.values()]}
+        payload = {
+            "timers": [
+                self._serialize_timer(self.timers[tid])
+                for tid in self.timer_order
+                if tid in self.timers
+            ]
+        }
         tmp_path = self.state_path.with_suffix(".tmp")
         try:
             tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -691,6 +812,7 @@ class TimerApp:
                 item.paused_remaining = max(0, item.paused_remaining)
 
             self.timers[item.timer_id] = item
+            self.timer_order.append(item.timer_id)
             self._create_row(item)
 
         self.state_dirty = False
