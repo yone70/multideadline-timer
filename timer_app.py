@@ -262,7 +262,7 @@ class TimerApp:
 
         ttk.Button(btns, text="Start", command=lambda tid=item.timer_id: self.start_timer(tid)).pack(side="left", padx=(0, 4))
         ttk.Button(btns, text="Pause", command=lambda tid=item.timer_id: self.pause_timer(tid)).pack(side="left", padx=(0, 4))
-        ttk.Button(btns, text="Cancel", command=lambda tid=item.timer_id: self.cancel_timer(tid)).pack(side="left")
+        ttk.Button(btns, text="Remove", command=lambda tid=item.timer_id: self.cancel_timer(tid)).pack(side="left")
 
     def _sync_label(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
@@ -276,12 +276,15 @@ class TimerApp:
 
     def start_timer(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
-        if not item or item.state == "Finished":
+        if not item:
             return
 
         now = dt.datetime.now()
         changed = False
-        if item.state == "Paused":
+        if item.state == "Finished":
+            restarted = self._restart_finished_timer(item)
+            changed = restarted
+        elif item.state == "Paused":
             if item.paused_remaining <= 0:
                 item.state = "Finished"
                 item.finished_at = now
@@ -297,6 +300,23 @@ class TimerApp:
             item.end_var.set(self._format_end_time(item.end_time))
         if changed:
             self._mark_dirty()
+
+    def _restart_finished_timer(self, item: TimerItem) -> bool:
+        preset_value = item.preset_relative if item.input_mode == "relative" else item.preset_absolute
+        if not preset_value:
+            return False
+
+        try:
+            end_time, _, _ = self._parse_time_input(preset_value)
+        except ValueError:
+            return False
+
+        item.end_time = end_time
+        item.paused_remaining = 0
+        item.state = "Running"
+        item.finished_at = None
+        item.alerted = False
+        return True
 
     def pause_timer(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
@@ -545,8 +565,10 @@ class TimerApp:
         item.input_mode = parsed_mode
         if parsed_mode == "absolute":
             item.preset_absolute = normalized_value
+            item.preset_relative = None
         else:
             item.preset_relative = normalized_value
+            item.preset_absolute = None
         if item.state_var:
             item.state_var.set(item.state)
         if item.end_var:
