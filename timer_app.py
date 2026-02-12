@@ -77,6 +77,7 @@ class TimerApp:
         self.state_dirty = False
 
         self.timers: dict[str, TimerItem] = {}
+        self.timer_order: list[str] = []
         self.pending_alerts: list[TimerItem] = []
         self.current_alert_window: tk.Toplevel | None = None
         self.current_alert_timer: TimerItem | None = None
@@ -87,6 +88,7 @@ class TimerApp:
         self.reset_input_var = tk.StringVar()
         self.add_label_entry: ttk.Entry | None = None
         self.add_time_entry: ttk.Entry | None = None
+        self.dragging_timer_id: str | None = None
 
         self.input_var = tk.StringVar()
         self.label_input_var = tk.StringVar(value="Timer")
@@ -185,7 +187,9 @@ class TimerApp:
             preset_absolute=normalized_value if parsed_mode == "absolute" else None,
         )
         self.timers[item.timer_id] = item
+        self.timer_order.append(item.timer_id)
         self._create_row(item)
+        self._repack_rows()
         self._mark_dirty()
 
         self.input_var.set("")
@@ -225,7 +229,6 @@ class TimerApp:
 
     def _create_row(self, item: TimerItem) -> None:
         row = ttk.Frame(self.rows_container, padding=(4, 4))
-        row.pack(fill="x")
         for idx, min_w in enumerate(COLUMN_WIDTHS):
             row.grid_columnconfigure(idx, minsize=min_w)
 
@@ -260,9 +263,58 @@ class TimerApp:
         btns = ttk.Frame(row)
         btns.grid(row=0, column=4, sticky="w", padx=4)
 
+        grip = ttk.Label(btns, text="⇅", cursor="fleur")
+        grip.pack(side="left", padx=(0, 8))
+        grip.bind("<ButtonPress-1>", lambda e, tid=item.timer_id: self._start_drag(e, tid))
+        grip.bind("<B1-Motion>", self._drag_timer)
+        grip.bind("<ButtonRelease-1>", self._end_drag)
+
         ttk.Button(btns, text="Start", command=lambda tid=item.timer_id: self.start_timer(tid)).pack(side="left", padx=(0, 4))
         ttk.Button(btns, text="Pause", command=lambda tid=item.timer_id: self.pause_timer(tid)).pack(side="left", padx=(0, 4))
-        ttk.Button(btns, text="Cancel", command=lambda tid=item.timer_id: self.cancel_timer(tid)).pack(side="left")
+        ttk.Button(btns, text="Remove", command=lambda tid=item.timer_id: self.cancel_timer(tid)).pack(side="left")
+
+    def _repack_rows(self) -> None:
+        for timer_id in self.timer_order:
+            item = self.timers.get(timer_id)
+            if not item or not item.row_frame or not item.row_frame.winfo_exists():
+                continue
+            item.row_frame.pack_forget()
+            item.row_frame.pack(fill="x")
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _start_drag(self, _event: tk.Event, timer_id: str) -> None:
+        if timer_id in self.timer_order:
+            self.dragging_timer_id = timer_id
+
+    def _drag_timer(self, event: tk.Event) -> None:
+        timer_id = self.dragging_timer_id
+        if not timer_id or timer_id not in self.timer_order:
+            return
+
+        pointer_y = event.widget.winfo_pointery() - self.rows_container.winfo_rooty()
+        target_index = len(self.timer_order)
+        for idx, candidate_id in enumerate(self.timer_order):
+            candidate = self.timers.get(candidate_id)
+            if not candidate or not candidate.row_frame or not candidate.row_frame.winfo_exists():
+                continue
+            center_y = candidate.row_frame.winfo_y() + (candidate.row_frame.winfo_height() // 2)
+            if pointer_y < center_y:
+                target_index = idx
+                break
+
+        current_index = self.timer_order.index(timer_id)
+        if target_index == current_index:
+            return
+
+        self.timer_order.pop(current_index)
+        if target_index > current_index:
+            target_index -= 1
+        self.timer_order.insert(target_index, timer_id)
+        self._repack_rows()
+        self._mark_dirty()
+
+    def _end_drag(self, _event: tk.Event) -> None:
+        self.dragging_timer_id = None
 
     def _sync_label(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
@@ -276,12 +328,15 @@ class TimerApp:
 
     def start_timer(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
-        if not item or item.state == "Finished":
+        if not item:
             return
 
         now = dt.datetime.now()
         changed = False
-        if item.state == "Paused":
+        if item.state == "Finished":
+            restarted = self._restart_finished_timer(item)
+            changed = restarted
+        elif item.state == "Paused":
             if item.paused_remaining <= 0:
                 item.state = "Finished"
                 item.finished_at = now
@@ -297,6 +352,23 @@ class TimerApp:
             item.end_var.set(self._format_end_time(item.end_time))
         if changed:
             self._mark_dirty()
+
+    def _restart_finished_timer(self, item: TimerItem) -> bool:
+        preset_value = item.preset_relative if item.input_mode == "relative" else item.preset_absolute
+        if not preset_value:
+            return False
+
+        try:
+            end_time, _, _ = self._parse_time_input(preset_value)
+        except ValueError:
+            return False
+
+        item.end_time = end_time
+        item.paused_remaining = 0
+        item.state = "Running"
+        item.finished_at = None
+        item.alerted = False
+        return True
 
     def pause_timer(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
@@ -319,6 +391,9 @@ class TimerApp:
         item = self.timers.pop(timer_id, None)
         if not item:
             return
+
+        if timer_id in self.timer_order:
+            self.timer_order.remove(timer_id)
 
         if item.row_frame and item.row_frame.winfo_exists():
             item.row_frame.destroy()
@@ -545,8 +620,10 @@ class TimerApp:
         item.input_mode = parsed_mode
         if parsed_mode == "absolute":
             item.preset_absolute = normalized_value
+            item.preset_relative = None
         else:
             item.preset_relative = normalized_value
+            item.preset_absolute = None
         if item.state_var:
             item.state_var.set(item.state)
         if item.end_var:
@@ -606,7 +683,13 @@ class TimerApp:
         }
 
     def _save_state(self) -> None:
-        payload = {"timers": [self._serialize_timer(item) for item in self.timers.values()]}
+        payload = {
+            "timers": [
+                self._serialize_timer(self.timers[timer_id])
+                for timer_id in self.timer_order
+                if timer_id in self.timers
+            ]
+        }
         tmp_path = self.state_path.with_suffix(".tmp")
         try:
             tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -669,7 +752,10 @@ class TimerApp:
                 item.paused_remaining = max(0, item.paused_remaining)
 
             self.timers[item.timer_id] = item
+            self.timer_order.append(item.timer_id)
             self._create_row(item)
+
+        self._repack_rows()
 
         self.state_dirty = False
 
