@@ -273,49 +273,6 @@ class TimerApp:
         ttk.Button(btns, text="Pause", command=lambda tid=item.timer_id: self.pause_timer(tid)).pack(side="left", padx=(0, 4))
         ttk.Button(btns, text="Remove", command=lambda tid=item.timer_id: self.cancel_timer(tid)).pack(side="left")
 
-    def _repack_rows(self) -> None:
-        for timer_id in self.timer_order:
-            item = self.timers.get(timer_id)
-            if not item or not item.row_frame or not item.row_frame.winfo_exists():
-                continue
-            item.row_frame.pack_forget()
-            item.row_frame.pack(fill="x")
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def _start_drag(self, _event: tk.Event, timer_id: str) -> None:
-        if timer_id in self.timer_order:
-            self.dragging_timer_id = timer_id
-
-    def _drag_timer(self, event: tk.Event) -> None:
-        timer_id = self.dragging_timer_id
-        if not timer_id or timer_id not in self.timer_order:
-            return
-
-        pointer_y = event.widget.winfo_pointery() - self.rows_container.winfo_rooty()
-        target_index = len(self.timer_order)
-        for idx, candidate_id in enumerate(self.timer_order):
-            candidate = self.timers.get(candidate_id)
-            if not candidate or not candidate.row_frame or not candidate.row_frame.winfo_exists():
-                continue
-            center_y = candidate.row_frame.winfo_y() + (candidate.row_frame.winfo_height() // 2)
-            if pointer_y < center_y:
-                target_index = idx
-                break
-
-        current_index = self.timer_order.index(timer_id)
-        if target_index == current_index:
-            return
-
-        self.timer_order.pop(current_index)
-        if target_index > current_index:
-            target_index -= 1
-        self.timer_order.insert(target_index, timer_id)
-        self._repack_rows()
-        self._mark_dirty()
-
-    def _end_drag(self, _event: tk.Event) -> None:
-        self.dragging_timer_id = None
-
     def _sync_label(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
         if not item or not item.label_var:
