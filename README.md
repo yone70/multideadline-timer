@@ -1,124 +1,103 @@
 # MultiDeadline Timer マニュアル
 
 ## 1. 概要
-`timer_app.py` は、複数タイマーを同時管理できる Tkinter 製のデスクトップアプリです。  
-タイマー終了時は、画面中央に横長の帯メッセージを最前面表示します。
+`timer_app.py` は、複数タイマーを同時管理できる Tkinter 製デスクトップアプリです。  
+タイマー終了時には、画面中央に横長の全画面アラートを表示します。
 
 - 対応OS: macOS / Windows / Linux
-- 使用ライブラリ: Python標準ライブラリのみ
+- 依存: Python 標準ライブラリのみ
 
 ## 2. 必要環境
 - Python 3.x
 - tkinter（通常の Python 配布に同梱）
 
 ## 3. 起動方法
-ターミナルでプロジェクトフォルダに移動して実行します。
-
 ```bash
 python3 timer_app.py
 ```
 
-Windows では:
-
+Windows:
 ```powershell
 python timer_app.py
 ```
 
 ## 4. 画面構成
-- 上部入力欄
-  - `Label`: タイマー名
-  - `Time`: タイマー時間入力
-  - `Add`: タイマー追加
-- 一覧（スクロール可）
+### Mainビュー
+- 上部入力
+  - `Label`
+  - `Time (HH:MM / M:SS / Minutes)`
+  - `Add`
+  - `Trash`
+- タイマー一覧
   - Label
-  - Remaining（クリック編集可）
-  - End Time（クリック編集可）
-  - State（Running / Paused / Finished）
-  - Start / Pause / Cancel
+  - Remaining  
+    `(Click to edit)`
+  - End Time  
+    `(Click to edit)`
+  - Actions（`▶/⏸`, `⏹`, `ⓧ`）
 
-### スクリーンショット
+### Trashビュー
+- 上部は `← Mainに戻る` と `Empty Trash` のみ表示
+- 一覧は削除済みタイマー
+- 各行で `↩`（復元）/ `🗑`（完全削除）
 
-#### メイン画面
-<img src="images/main_ui.png" width="900" alt="メイン画面">
+## 5. 入力形式
+`Time` は以下を受け付けます。
 
-**JP:** 複数タイマーを一覧（スクロール可）で管理します。*Remaining* と *End Time* はクリックして編集できます。
+1. 絶対時刻: `HH:MM`（例 `07:20`）
+2. 相対時間: `M:SS`（例 `0:55`）
+3. 分のみ: `15`（15分）
 
-#### 終了アラート
-<img src="images/alert_fullscreen.png" width="900" alt="終了アラート">
+絶対時刻が現在より前なら翌日扱いです。
 
-**JP:** タイマー満了時に、画面中央へ横長の帯メッセージを最前面表示します。  
-解除は **ESC / Enter / クリック** です。  
+## 6. タイマー動作
+### absolute（`HH:MM`）
+- ソース: `target time`
+- 実行中は `⏸` 表示だが押せません（Pauseなし）
+- `⏹` は停止（Remaining を `--:--` 表示）
+- 00:00 到達時
+  1. Alert表示
+  2. Alert後、Remaining は `--:--`
+  3. `▶` で同じ `HH:MM` の次回時刻へ再開
+  4. 完了後の `⏹` は無視
 
-## 5. タイマーの追加
-`Time` は以下形式で入力できます。
+### relative（`M:SS` / 分）
+- ソース: `remaining_seconds` と `initial_seconds`
+- `⏸` で一時停止、`▶` で再開
+- `⏹` は停止 + `initial_seconds` にリセット
+- 00:00 到達時
+  1. Alert表示
+  2. Alert後、Remaining は最後に設定した値（例: `00:30`）
+  3. `▶` で新規カウントダウン開始
+  4. 完了後の `⏹` は無視
 
-1. 絶対時刻指定: `HH:MM`
-- 例: `07:20`
-- 現在より過去時刻なら翌日扱い
+## 7. 編集
+- Remaining をクリック: 相対時間として再設定
+- End Time をクリック: 絶対時刻として再設定
+- Label は各行で直接編集可能
 
-2. 相対時間指定: `M:SS`
-- 例: `0:55`（55秒）
+## 8. 削除と復元
+- `ⓧ`: ソフト削除（Trashへ移動）
+- Trashビュー `↩`: 復元
+- Trashビュー `🗑`: その項目を完全削除
+- `Empty Trash`: Trashを全削除
 
-3. 分のみ指定
-- 例: `15`（15分）
+## 9. 終了アラート
+満了時に `Time is up!` を全画面帯で表示。
 
-`Add` または Enter で追加します。
-
-## 6. 操作方法
-- `Start`: Paused タイマーを再開
-- `Pause`: 実行中タイマーを一時停止
-- `Cancel`: タイマー削除
-- `Label` 欄: 状態に関係なく直接編集可能
-
-## 7. Remaining / End Time の再編集
-- `Remaining` をクリック: 相対時間を再設定
-- `End Time` をクリック: 絶対時刻を再設定
-
-編集ダイアログには、そのタイマーの「前回設定値」が初期表示されます。
-
-例:
-- `0:55` で作成したタイマーは、Finished 後に Remaining に `0:55` を表示
-- `00:55` で作成したタイマーは、Finished 後に End Time に `00:55` を表示
-
-## 8. 終了アラート
-タイマー満了時、画面中央に横長帯の `Time is up!` メッセージを表示します。
-
-解除方法:
+解除:
 - `ESC`
 - `Enter`
-- マウスクリック
+- クリック
 
-解除後は、上部の Label 入力欄へフォーカスが戻ります。
+## 10. 自動保存/復元
+- 保存先: `timer_state.json`
+- 形式: `timers`（現役）と `trash`（ゴミ箱）
+- タイミング: 状態変更後のautosave + 終了時
+- 起動時に自動復元（旧形式ファイルも互換読込）
 
-## 9. 自動復元（再起動時の継続）
-アプリはタイマー状態を自動保存します。
-
-- 保存ファイル: `timer_state.json`
-- 保存タイミング:
-  - 状態変更時（定期 autosave）
-  - アプリ終了時
-- 起動時に自動復元
-
-これにより、誤ってアプリを閉じても、再起動時に進行状態を継続できます（絶対時刻ベースで再計算）。
-
-## 10. OS別フォント
-アプリはOSに応じてUIフォントを自動選択します。
-
-- macOS: `Hiragino Sans` など
-- Windows: `Yu Gothic UI` / `Meiryo UI` / `Segoe UI`
-- Linux: `Noto Sans CJK JP` など
-
-## 11. よくある問題
-1. タイマーが追加できない
-- `Time` の入力形式が正しいか確認してください（`HH:MM` / `M:SS` / 分）。
-
-2. 前回状態が復元されない
-- `timer_state.json` が存在するか、書き込み権限があるか確認してください。
-
-3. 文字表示が崩れる
-- OSに日本語フォントが不足している可能性があります。日本語フォントを導入してください。
-
-## 12. ファイル構成
+## 11. ファイル
 - `timer_app.py`: アプリ本体
-- `timer_state.json`: 自動保存されるタイマー状態
-- `readme.md`: 本マニュアル
+- `timer_state.json`: 保存状態
+- `README.md`: 日本語マニュアル
+- `README_EN.md`: English manual
