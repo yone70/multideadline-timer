@@ -15,6 +15,7 @@ import datetime as dt
 import json
 import platform
 import re
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from dataclasses import dataclass, field
@@ -26,7 +27,7 @@ from uuid import uuid4
 ABSOLUTE_TIME_RE = re.compile(r"^(\d{2}):(\d{2})$")
 RELATIVE_COLON_RE = re.compile(r"^(\d{1,3}):(\d{1,2})$")
 MINUTES_ONLY_RE = re.compile(r"^\d+$")
-COLUMN_WIDTHS = [240, 300, 220, 120, 260]
+COLUMN_WIDTHS = [248, 184, 126, 100]
 
 
 def pick_ui_font_family(root: tk.Tk) -> str:
@@ -49,36 +50,45 @@ def pick_ui_font_family(root: tk.Tk) -> str:
 class TimerItem:
     timer_id: str
     label: str
-    state: str  # Running, Paused, Finished
-    end_time: dt.datetime | None
-    paused_remaining: int = 0
+    input_mode: str  # relative or absolute
+    state: str = "Running"  # Running, Paused, Stopped, Finished
+    target_epoch: float | None = None  # absolute source of truth
+    target_hhmm: str | None = None
+    remaining_seconds: float = 0.0  # relative source of truth
+    initial_seconds: int = 0
+    last_tick_epoch: float | None = None
     finished_at: dt.datetime | None = None
     alerted: bool = False
-    input_mode: str = "relative"  # relative or absolute
-    preset_relative: str | None = None
-    preset_absolute: str | None = None
 
     row_frame: ttk.Frame | None = field(default=None, repr=False)
     label_var: tk.StringVar | None = field(default=None, repr=False)
     remaining_var: tk.StringVar | None = field(default=None, repr=False)
     end_var: tk.StringVar | None = field(default=None, repr=False)
-    state_var: tk.StringVar | None = field(default=None, repr=False)
     drag_handle: ttk.Label | None = field(default=None, repr=False)
+    remaining_btn: tk.Button | None = field(default=None, repr=False)
+    end_btn: tk.Button | None = field(default=None, repr=False)
+    play_pause_btn: tk.Button | None = field(default=None, repr=False)
+    stop_btn: tk.Button | None = field(default=None, repr=False)
+    delete_btn: tk.Button | None = field(default=None, repr=False)
 
 
 class TimerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("MultiDeadline Timer")
-        self.root.geometry("1260x780")
-        self.root.minsize(1120, 700)
+        self.root.geometry("900x760")
+        self.root.minsize(800, 640)
         self.ui_font_family = pick_ui_font_family(self.root)
-        self.root.option_add("*Font", f"{{{self.ui_font_family}}} 13")
+        self.root.option_add("*Font", f"{{{self.ui_font_family}}} 12")
         self.state_path = Path(__file__).with_name("timer_state.json")
         self.state_dirty = False
 
         self.timers: dict[str, TimerItem] = {}
         self.timer_order: list[str] = []
+        self.trash_timers: dict[str, TimerItem] = {}
+        self.trash_order: list[str] = []
+        self.showing_trash = False
+
         self.pending_alerts: list[TimerItem] = []
         self.current_alert_window: tk.Toplevel | None = None
         self.current_alert_timer: TimerItem | None = None
@@ -91,6 +101,12 @@ class TimerApp:
         self.add_time_entry: ttk.Entry | None = None
         self.dragging_timer_id: str | None = None
         self.drop_effect_job: str | None = None
+        self.trash_toggle_btn: ttk.Button | None = None
+        self.back_main_btn: ttk.Button | None = None
+        self.empty_trash_btn: ttk.Button | None = None
+        self.main_controls_frame: ttk.Frame | None = None
+        self.trash_controls_frame: ttk.Frame | None = None
+        self.error_label_widget: ttk.Label | None = None
 
         self.input_var = tk.StringVar()
         self.label_input_var = tk.StringVar(value="Timer")
@@ -98,42 +114,61 @@ class TimerApp:
 
         self._build_ui()
         self._load_state()
+        self._render_rows()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(1000, self._autosave_loop)
         self._tick()
 
     def _build_ui(self) -> None:
-        container = ttk.Frame(self.root, padding=12)
+        container = ttk.Frame(self.root, padding=10)
         container.pack(fill="both", expand=True)
 
         add_frame = ttk.Frame(container)
-        add_frame.pack(fill="x", pady=(0, 8))
+        add_frame.pack(fill="x", pady=(0, 6))
+        self.main_controls_frame = add_frame
 
         ttk.Label(add_frame, text="Label").pack(side="left")
-        label_entry = ttk.Entry(add_frame, textvariable=self.label_input_var, width=20)
-        label_entry.pack(side="left", padx=(6, 12))
+        label_entry = ttk.Entry(add_frame, textvariable=self.label_input_var, width=12)
+        label_entry.pack(side="left", padx=(6, 10))
         self.add_label_entry = label_entry
 
         ttk.Label(add_frame, text="Time (HH:MM / M:SS / Minutes)").pack(side="left")
-        entry = ttk.Entry(add_frame, textvariable=self.input_var, width=24)
+        entry = ttk.Entry(add_frame, textvariable=self.input_var, width=13)
         entry.pack(side="left", padx=6)
         entry.bind("<Return>", lambda _: self.add_timer())
         self.add_time_entry = entry
 
-        add_btn = ttk.Button(add_frame, text="Add", command=self.add_timer)
-        add_btn.pack(side="left", padx=(4, 0))
+        ttk.Button(add_frame, text="Add", command=self.add_timer).pack(side="left", padx=(4, 6))
 
-        ttk.Label(container, textvariable=self.error_var, foreground="red").pack(fill="x", pady=(0, 8))
+        self.trash_toggle_btn = ttk.Button(add_frame, text="🗑 Trash", command=self.toggle_trash_view)
+        self.trash_toggle_btn.pack(side="left")
+
+        trash_frame = ttk.Frame(container)
+        self.trash_controls_frame = trash_frame
+        self.back_main_btn = ttk.Button(trash_frame, text="← Mainに戻る", command=self.toggle_trash_view)
+        self.back_main_btn.pack(side="left")
+        self.empty_trash_btn = ttk.Button(trash_frame, text="Empty Trash", command=self.empty_trash)
+        self.empty_trash_btn.pack(side="left", padx=(6, 0))
+
+        error_label = ttk.Label(container, textvariable=self.error_var, foreground="red")
+        error_label.pack(fill="x", pady=(0, 6))
+        self.error_label_widget = error_label
 
         header = ttk.Frame(container)
         header.pack(fill="x")
         for idx, min_w in enumerate(COLUMN_WIDTHS):
             header.grid_columnconfigure(idx, minsize=min_w)
-        ttk.Label(header, text="Label").grid(row=0, column=0, sticky="w", padx=4)
-        ttk.Label(header, text="Remaining (Click to edit)").grid(row=0, column=1, sticky="w", padx=4)
-        ttk.Label(header, text="End Time (Click to edit)").grid(row=0, column=2, sticky="w", padx=4)
-        ttk.Label(header, text="State").grid(row=0, column=3, sticky="w", padx=4)
-        ttk.Label(header, text="Actions").grid(row=0, column=4, sticky="w", padx=4)
+        ttk.Label(header, text="Label").grid(row=0, column=0, sticky="w", padx=(36, 4))
+        rem_header = ttk.Frame(header)
+        rem_header.grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(rem_header, text="Remaining").pack(anchor="w")
+        ttk.Label(rem_header, text="(Click to edit)", font=(self.ui_font_family, 9)).pack(anchor="w")
+
+        end_header = ttk.Frame(header)
+        end_header.grid(row=0, column=2, sticky="w", padx=4)
+        ttk.Label(end_header, text="End Time").pack(anchor="w")
+        ttk.Label(end_header, text="(Click to edit)", font=(self.ui_font_family, 9)).pack(anchor="w")
+        ttk.Label(header, text="Actions").grid(row=0, column=3, sticky="w", padx=4)
 
         list_frame = ttk.Frame(container)
         list_frame.pack(fill="both", expand=True)
@@ -173,29 +208,33 @@ class TimerApp:
             return
 
         try:
-            end_time, parsed_mode, normalized_value = self._parse_time_input(raw_time)
+            parsed = self._parse_time_input(raw_time)
         except ValueError as exc:
             self.error_var.set(str(exc))
             return
 
+        now_epoch = time.time()
         self.error_var.set("")
-        item = TimerItem(
-            timer_id=str(uuid4()),
-            label=label,
-            state="Running",
-            end_time=end_time,
-            input_mode=parsed_mode,
-            preset_relative=normalized_value if parsed_mode == "relative" else None,
-            preset_absolute=normalized_value if parsed_mode == "absolute" else None,
-        )
+        item = TimerItem(timer_id=str(uuid4()), label=label, input_mode=parsed["mode"])
+
+        if parsed["mode"] == "absolute":
+            item.target_epoch = parsed["target_epoch"]
+            item.target_hhmm = parsed["normalized"]
+            item.state = "Running"
+        else:
+            seconds = int(parsed["seconds"])
+            item.initial_seconds = seconds
+            item.remaining_seconds = float(seconds)
+            item.last_tick_epoch = now_epoch
+            item.state = "Running"
+
         self.timers[item.timer_id] = item
         self.timer_order.append(item.timer_id)
-        self._create_row(item)
+        self.input_var.set("")
+        self._render_rows()
         self._mark_dirty()
 
-        self.input_var.set("")
-
-    def _parse_time_input(self, value: str) -> tuple[dt.datetime, str, str]:
+    def _parse_time_input(self, value: str) -> dict[str, object]:
         now = dt.datetime.now()
 
         m_abs = ABSOLUTE_TIME_RE.match(value)
@@ -207,7 +246,11 @@ class TimerApp:
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if target <= now:
                 target += dt.timedelta(days=1)
-            return target, "absolute", f"{hour:02d}:{minute:02d}"
+            return {
+                "mode": "absolute",
+                "target_epoch": target.timestamp(),
+                "normalized": f"{hour:02d}:{minute:02d}",
+            }
 
         m_rel = RELATIVE_COLON_RE.match(value)
         if m_rel:
@@ -218,15 +261,82 @@ class TimerApp:
             total_seconds = minutes * 60 + seconds
             if total_seconds <= 0:
                 raise ValueError("Relative time must be greater than 0.")
-            return now + dt.timedelta(seconds=total_seconds), "relative", f"{minutes}:{seconds:02d}"
+            return {
+                "mode": "relative",
+                "seconds": total_seconds,
+                "normalized": f"{minutes}:{seconds:02d}",
+            }
 
         if MINUTES_ONLY_RE.match(value):
             minutes = int(value)
             if minutes <= 0:
                 raise ValueError("Minutes must be greater than 0.")
-            return now + dt.timedelta(minutes=minutes), "relative", f"{minutes}:00"
+            return {
+                "mode": "relative",
+                "seconds": minutes * 60,
+                "normalized": f"{minutes}:00",
+            }
 
         raise ValueError("Invalid format. Use HH:MM, M:SS, or minutes only.")
+
+    def toggle_trash_view(self) -> None:
+        self.showing_trash = not self.showing_trash
+        self._render_rows()
+
+    def _render_rows(self) -> None:
+        for tid in self.timer_order:
+            self._sync_label(tid)
+        for item in list(self.timers.values()) + list(self.trash_timers.values()):
+            self._clear_widget_refs(item)
+
+        for child in self.rows_container.winfo_children():
+            child.destroy()
+
+        if self.showing_trash:
+            if self.main_controls_frame and self.main_controls_frame.winfo_manager():
+                self.main_controls_frame.pack_forget()
+            if self.trash_controls_frame and not self.trash_controls_frame.winfo_manager():
+                if self.error_label_widget and self.error_label_widget.winfo_exists():
+                    self.trash_controls_frame.pack(fill="x", pady=(0, 6), before=self.error_label_widget)
+                else:
+                    self.trash_controls_frame.pack(fill="x", pady=(0, 6))
+            if self.trash_toggle_btn:
+                self.trash_toggle_btn.configure(text="🗑 Trash")
+            if self.empty_trash_btn:
+                self.empty_trash_btn.state(["!disabled"])
+            for tid in self.trash_order:
+                item = self.trash_timers.get(tid)
+                if item:
+                    self._create_trash_row(item)
+        else:
+            if self.trash_controls_frame and self.trash_controls_frame.winfo_manager():
+                self.trash_controls_frame.pack_forget()
+            if self.main_controls_frame and not self.main_controls_frame.winfo_manager():
+                if self.error_label_widget and self.error_label_widget.winfo_exists():
+                    self.main_controls_frame.pack(fill="x", pady=(0, 6), before=self.error_label_widget)
+                else:
+                    self.main_controls_frame.pack(fill="x", pady=(0, 6))
+            if self.trash_toggle_btn:
+                self.trash_toggle_btn.configure(text="🗑 Trash")
+            for tid in self.timer_order:
+                item = self.timers.get(tid)
+                if item:
+                    self._create_row(item)
+
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    @staticmethod
+    def _clear_widget_refs(item: TimerItem) -> None:
+        item.row_frame = None
+        item.label_var = None
+        item.remaining_var = None
+        item.end_var = None
+        item.drag_handle = None
+        item.remaining_btn = None
+        item.end_btn = None
+        item.play_pause_btn = None
+        item.stop_btn = None
+        item.delete_btn = None
 
     def _create_row(self, item: TimerItem) -> None:
         row = ttk.Frame(self.rows_container, padding=(4, 4))
@@ -237,46 +347,125 @@ class TimerApp:
         item.row_frame = row
         item.label_var = tk.StringVar(value=item.label)
         item.remaining_var = tk.StringVar(value="--:--")
-        item.end_var = tk.StringVar(value=self._format_end_time(item.end_time))
-        item.state_var = tk.StringVar(value=item.state)
+        item.end_var = tk.StringVar(value="--:--")
 
         label_cell = ttk.Frame(row)
         label_cell.grid(row=0, column=0, sticky="we", padx=4)
-        label_cell.columnconfigure(1, weight=1)
+        label_cell.columnconfigure(1, weight=0)
 
         drag_handle = ttk.Label(label_cell, text="::", cursor="fleur", width=3, anchor="center")
         drag_handle.grid(row=0, column=0, padx=(0, 4))
         item.drag_handle = drag_handle
         self._bind_drag_events(drag_handle, item.timer_id)
 
-        label_entry = ttk.Entry(label_cell, textvariable=item.label_var)
-        label_entry.grid(row=0, column=1, sticky="we")
+        label_entry = ttk.Entry(label_cell, textvariable=item.label_var, width=12)
+        label_entry.grid(row=0, column=1, sticky="w")
         label_entry.bind("<FocusOut>", lambda _e, tid=item.timer_id: self._sync_label(tid))
         label_entry.bind("<Return>", lambda _e, tid=item.timer_id: self._sync_label(tid))
 
-        tk.Button(
+        remaining_btn = tk.Button(
             row,
             textvariable=item.remaining_var,
-            font=(self.ui_font_family, 24, "bold"),
+            font=(self.ui_font_family, 20, "bold"),
             bg="#efefef",
             relief="flat",
             bd=0,
             cursor="hand2",
             command=lambda tid=item.timer_id: self.open_reset_dialog(tid, "relative"),
-        ).grid(row=0, column=1, sticky="w", padx=4)
-        ttk.Button(
+            padx=4,
+            pady=2,
+        )
+        remaining_btn.grid(row=0, column=1, sticky="w", padx=4)
+        item.remaining_btn = remaining_btn
+
+        end_btn = tk.Button(
             row,
             textvariable=item.end_var,
+            font=(self.ui_font_family, 12),
+            bg="#efefef",
+            relief="flat",
+            bd=0,
+            cursor="hand2",
             command=lambda tid=item.timer_id: self.open_reset_dialog(tid, "absolute"),
-        ).grid(row=0, column=2, sticky="w", padx=4)
-        ttk.Label(row, textvariable=item.state_var).grid(row=0, column=3, sticky="w", padx=4)
+            padx=4,
+            pady=2,
+        )
+        end_btn.grid(row=0, column=2, sticky="w", padx=4)
+        item.end_btn = end_btn
 
         btns = ttk.Frame(row)
-        btns.grid(row=0, column=4, sticky="w", padx=4)
+        btns.grid(row=0, column=3, sticky="w", padx=4)
+        btns.grid_rowconfigure(0, weight=1)
+        btns.grid_rowconfigure(1, weight=1)
 
-        ttk.Button(btns, text="Start", command=lambda tid=item.timer_id: self.start_timer(tid)).pack(side="left", padx=(0, 4))
-        ttk.Button(btns, text="Pause", command=lambda tid=item.timer_id: self.pause_timer(tid)).pack(side="left", padx=(0, 4))
-        ttk.Button(btns, text="Remove", command=lambda tid=item.timer_id: self.cancel_timer(tid)).pack(side="left")
+        stack = ttk.Frame(btns)
+        stack.grid(row=0, column=0, rowspan=2, sticky="ns")
+
+        play_pause_btn = tk.Button(
+            stack,
+            text="▶",
+            width=2,
+            command=lambda tid=item.timer_id: self.toggle_play_pause(tid),
+            relief="groove",
+            padx=0,
+            pady=0,
+        )
+        play_pause_btn.pack(side="top", pady=(0, 3))
+        item.play_pause_btn = play_pause_btn
+
+        stop_btn = tk.Button(
+            stack,
+            text="⏹",
+            width=2,
+            command=lambda tid=item.timer_id: self.stop_timer(tid),
+            relief="groove",
+            padx=0,
+            pady=0,
+        )
+        stop_btn.pack(side="top")
+        item.stop_btn = stop_btn
+
+        delete_btn = tk.Button(
+            btns,
+            text="ⓧ",
+            width=1,
+            command=lambda tid=item.timer_id: self.move_to_trash(tid),
+            relief="groove",
+            font=(self.ui_font_family, 10),
+            padx=0,
+            pady=0,
+        )
+        delete_btn.grid(row=0, column=1, rowspan=2, sticky="ns", padx=(10, 0))
+        item.delete_btn = delete_btn
+
+        self._refresh_row(item)
+
+    def _create_trash_row(self, item: TimerItem) -> None:
+        row = ttk.Frame(self.rows_container, padding=(4, 4))
+        row.pack(fill="x")
+        for idx, min_w in enumerate(COLUMN_WIDTHS):
+            row.grid_columnconfigure(idx, minsize=min_w)
+
+        ttk.Label(row, text=item.label).grid(row=0, column=0, sticky="w", padx=4)
+        ttk.Label(row, text=self._display_remaining(item)).grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(row, text=self._display_end(item)).grid(row=0, column=2, sticky="w", padx=4)
+
+        actions = ttk.Frame(row)
+        actions.grid(row=0, column=3, sticky="w", padx=4)
+        tk.Button(
+            actions,
+            text="↩",
+            width=2,
+            command=lambda tid=item.timer_id: self.restore_from_trash(tid),
+            relief="groove",
+        ).pack(side="left", padx=(0, 6))
+        tk.Button(
+            actions,
+            text="🗑",
+            width=2,
+            command=lambda tid=item.timer_id: self.delete_permanently(tid),
+            relief="groove",
+        ).pack(side="left")
 
     def _bind_drag_events(self, widget: tk.Widget, timer_id: str) -> None:
         widget.bind("<ButtonPress-1>", lambda event, tid=timer_id: self._on_drag_start(event, tid))
@@ -284,12 +473,16 @@ class TimerApp:
         widget.bind("<ButtonRelease-1>", self._on_drag_end)
 
     def _on_drag_start(self, _event: tk.Event, timer_id: str) -> None:
+        if self.showing_trash:
+            return
         self.dragging_timer_id = timer_id
         item = self.timers.get(timer_id)
         if item:
             self._set_row_lifted(item, True)
 
     def _on_drag_motion(self, event: tk.Event) -> None:
+        if self.showing_trash:
+            return
         timer_id = self.dragging_timer_id
         if not timer_id or timer_id not in self.timer_order:
             return
@@ -385,128 +578,248 @@ class TimerApp:
             self._mark_dirty()
         item.label_var.set(item.label)
 
-    def start_timer(self, timer_id: str) -> None:
+    def toggle_play_pause(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
         if not item:
             return
 
-        now = dt.datetime.now()
-        changed = False
-        if item.state == "Finished":
-            restarted = self._restart_finished_timer(item)
-            changed = restarted
-        elif item.state == "Paused":
-            if item.paused_remaining <= 0:
-                item.state = "Finished"
-                item.finished_at = now
-                changed = True
-            else:
-                item.end_time = now + dt.timedelta(seconds=item.paused_remaining)
-                item.state = "Running"
-                changed = True
+        now_epoch = time.time()
 
-        if item.state_var:
-            item.state_var.set(item.state)
-        if item.end_var:
-            item.end_var.set(self._format_end_time(item.end_time))
-        if changed:
-            self._mark_dirty()
-
-    def _restart_finished_timer(self, item: TimerItem) -> bool:
-        preset_value = item.preset_relative if item.input_mode == "relative" else item.preset_absolute
-        if not preset_value:
-            return False
-
-        try:
-            end_time, _, _ = self._parse_time_input(preset_value)
-        except ValueError:
-            return False
-
-        item.end_time = end_time
-        item.paused_remaining = 0
-        item.state = "Running"
-        item.finished_at = None
-        item.alerted = False
-        return True
-
-    def pause_timer(self, timer_id: str) -> None:
-        item = self.timers.get(timer_id)
-        if not item or item.state != "Running" or not item.end_time:
+        if item.state == "Running":
+            if item.input_mode == "relative":
+                item.state = "Paused"
+                item.last_tick_epoch = None
+                self._mark_dirty()
             return
 
-        now = dt.datetime.now()
-        remaining = max(0, int((item.end_time - now).total_seconds()))
-        item.paused_remaining = remaining
-        item.end_time = None
-        item.state = "Paused"
-        self._mark_dirty()
+        if item.input_mode == "absolute":
+            if item.target_epoch is None:
+                return
+            if item.state == "Finished":
+                item.target_epoch = self._next_absolute_epoch(item)
+            item.state = "Running"
+            item.finished_at = None
+            item.alerted = False
+            self._mark_dirty()
+        else:
+            if item.state == "Finished" or item.remaining_seconds <= 0:
+                item.remaining_seconds = float(item.initial_seconds)
+            item.state = "Running"
+            item.last_tick_epoch = now_epoch
+            item.finished_at = None
+            item.alerted = False
+            self._mark_dirty()
 
-        if item.state_var:
-            item.state_var.set(item.state)
-        if item.end_var:
-            item.end_var.set("--:--")
+        self._refresh_row(item)
 
-    def cancel_timer(self, timer_id: str) -> None:
+    def stop_timer(self, timer_id: str) -> None:
+        item = self.timers.get(timer_id)
+        if not item:
+            return
+
+        if item.input_mode == "absolute":
+            if item.state == "Finished":
+                return
+            item.state = "Stopped"
+            item.finished_at = None
+            item.last_tick_epoch = None
+            self.pending_alerts = [t for t in self.pending_alerts if t.timer_id != timer_id]
+            if self.current_alert_timer and self.current_alert_timer.timer_id == timer_id:
+                self._dismiss_alert()
+            self._mark_dirty()
+        else:
+            if item.state == "Finished":
+                return
+            item.state = "Stopped"
+            item.remaining_seconds = float(item.initial_seconds)
+            item.last_tick_epoch = None
+            item.finished_at = None
+            item.alerted = False
+            self.pending_alerts = [t for t in self.pending_alerts if t.timer_id != timer_id]
+            if self.current_alert_timer and self.current_alert_timer.timer_id == timer_id:
+                self._dismiss_alert()
+            self._mark_dirty()
+
+        self._refresh_row(item)
+
+    def move_to_trash(self, timer_id: str) -> None:
         item = self.timers.pop(timer_id, None)
         if not item:
             return
         self.timer_order = [tid for tid in self.timer_order if tid != timer_id]
-
-        if item.row_frame and item.row_frame.winfo_exists():
-            item.row_frame.destroy()
+        self.trash_timers[item.timer_id] = item
+        self.trash_order.append(item.timer_id)
 
         if self.current_alert_timer and self.current_alert_timer.timer_id == timer_id:
             self._dismiss_alert()
-
         self.pending_alerts = [t for t in self.pending_alerts if t.timer_id != timer_id]
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        self._mark_dirty()
 
         if self.reset_target_timer_id == timer_id:
             self._close_reset_dialog()
 
+        self._render_rows()
+        self._mark_dirty()
+
+    def restore_from_trash(self, timer_id: str) -> None:
+        item = self.trash_timers.pop(timer_id, None)
+        if not item:
+            return
+        self.trash_order = [tid for tid in self.trash_order if tid != timer_id]
+        self.timers[item.timer_id] = item
+        self.timer_order.append(item.timer_id)
+        self._render_rows()
+        self._mark_dirty()
+
+    def delete_permanently(self, timer_id: str) -> None:
+        removed = self.trash_timers.pop(timer_id, None)
+        if not removed:
+            return
+        self.trash_order = [tid for tid in self.trash_order if tid != timer_id]
+        self._render_rows()
+        self._mark_dirty()
+
+    def empty_trash(self) -> None:
+        if not self.trash_order:
+            return
+        self.trash_timers.clear()
+        self.trash_order.clear()
+        self._render_rows()
+        self._mark_dirty()
+
     def _tick(self) -> None:
-        now = dt.datetime.now()
+        now_epoch = time.time()
+        now_dt = dt.datetime.now()
 
         for tid in list(self.timer_order):
             item = self.timers.get(tid)
             if not item:
                 continue
             self._sync_label(item.timer_id)
-            if item.state == "Running" and item.end_time:
-                remaining = (item.end_time - now).total_seconds()
-                if remaining <= 0:
-                    item.state = "Finished"
-                    item.finished_at = now
-                    if not item.alerted:
-                        self.pending_alerts.append(item)
-                        item.alerted = True
-                    self._mark_dirty()
-                    remaining = 0
-                display_remaining = int(max(0, remaining))
-            elif item.state == "Paused":
-                display_remaining = max(0, item.paused_remaining)
-            else:
-                display_remaining = 0
 
-            if item.remaining_var:
-                if item.state == "Finished" and item.input_mode == "relative" and item.preset_relative:
-                    item.remaining_var.set(item.preset_relative)
+            if item.state == "Running":
+                if item.input_mode == "absolute":
+                    remaining = self._absolute_remaining(item, now_epoch)
+                    if remaining <= 0:
+                        item.state = "Finished"
+                        item.finished_at = now_dt
+                        item.alerted = True
+                        self.pending_alerts.append(item)
+                        self._mark_dirty()
                 else:
-                    item.remaining_var.set(self._format_remaining(display_remaining))
-            if item.state_var:
-                item.state_var.set(item.state)
-            if item.end_var:
-                if item.state == "Finished" and item.input_mode == "absolute" and item.preset_absolute:
-                    item.end_var.set(item.preset_absolute)
-                else:
-                    item.end_var.set(self._format_end_time(item.end_time))
+                    if item.last_tick_epoch is None:
+                        item.last_tick_epoch = now_epoch
+                    delta = max(0.0, now_epoch - item.last_tick_epoch)
+                    if delta > 0:
+                        item.remaining_seconds = max(0.0, item.remaining_seconds - delta)
+                        item.last_tick_epoch = now_epoch
+                    if item.remaining_seconds <= 0:
+                        item.remaining_seconds = 0.0
+                        item.state = "Finished"
+                        item.finished_at = now_dt
+                        item.last_tick_epoch = None
+                        if not item.alerted:
+                            item.alerted = True
+                            self.pending_alerts.append(item)
+                        self._mark_dirty()
+
+            self._refresh_row(item)
 
         if not self.current_alert_window and self.pending_alerts:
             next_item = self.pending_alerts.pop(0)
-            self._show_fullscreen_alert(next_item)
+            if next_item.timer_id in self.timers and next_item.state == "Finished":
+                self._show_fullscreen_alert(next_item)
 
         self.root.after(200, self._tick)
+
+    def _next_absolute_epoch(self, item: TimerItem) -> float:
+        now = dt.datetime.now()
+        hhmm = item.target_hhmm
+        if hhmm and ABSOLUTE_TIME_RE.match(hhmm):
+            hour, minute = map(int, hhmm.split(":"))
+        elif item.target_epoch is not None:
+            base = dt.datetime.fromtimestamp(item.target_epoch)
+            hour, minute = base.hour, base.minute
+        else:
+            hour, minute = now.hour, now.minute
+
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += dt.timedelta(days=1)
+        item.target_hhmm = f"{hour:02d}:{minute:02d}"
+        return target.timestamp()
+
+    def _absolute_remaining(self, item: TimerItem, now_epoch: float | None = None) -> int:
+        if item.target_epoch is None:
+            return 0
+        ref = now_epoch if now_epoch is not None else time.time()
+        return max(0, int(item.target_epoch - ref))
+
+    def _display_remaining(self, item: TimerItem) -> str:
+        if item.input_mode == "absolute":
+            if item.state == "Stopped":
+                return "--:--"
+            if item.state == "Finished":
+                if self._is_alert_visible_or_pending(item):
+                    return "00:00"
+                return "--:--"
+            return self._format_remaining(self._absolute_remaining(item))
+
+        if item.state == "Finished":
+            if self._is_alert_visible_or_pending(item):
+                return "00:00"
+            return self._format_remaining(int(max(0, item.initial_seconds)))
+        if item.state == "Stopped":
+            return self._format_remaining(int(max(0, item.initial_seconds)))
+        return self._format_remaining(int(max(0, item.remaining_seconds)))
+
+    def _is_alert_visible_or_pending(self, item: TimerItem) -> bool:
+        if self.current_alert_timer and self.current_alert_timer.timer_id == item.timer_id:
+            return True
+        return any(p.timer_id == item.timer_id for p in self.pending_alerts)
+
+    def _display_end(self, item: TimerItem) -> str:
+        if item.input_mode == "absolute":
+            if item.target_hhmm:
+                return item.target_hhmm
+            if item.target_epoch is not None:
+                return dt.datetime.fromtimestamp(item.target_epoch).strftime("%H:%M")
+            return "--:--"
+
+        if item.state == "Stopped":
+            return "--:--"
+        if item.state == "Running":
+            eta = dt.datetime.now() + dt.timedelta(seconds=int(max(0, item.remaining_seconds)))
+            return eta.strftime("%H:%M")
+        return "--:--"
+
+    def _refresh_row(self, item: TimerItem) -> None:
+        if item.remaining_var:
+            item.remaining_var.set(self._display_remaining(item))
+        if item.end_var:
+            item.end_var.set(self._display_end(item))
+
+        if item.remaining_btn:
+            fg = "#444444" if item.input_mode == "relative" and item.state == "Paused" else "#000000"
+            item.remaining_btn.configure(fg=fg, disabledforeground="#888888")
+
+        if item.end_btn:
+            fg = "#888888" if item.input_mode == "relative" and item.state == "Paused" else "#000000"
+            item.end_btn.configure(fg=fg, disabledforeground="#888888")
+
+        if not item.play_pause_btn or not item.stop_btn or not item.delete_btn:
+            return
+
+        if item.state == "Running":
+            item.play_pause_btn.configure(text="⏸")
+            if item.input_mode == "absolute":
+                item.play_pause_btn.configure(state="disabled")
+            else:
+                item.play_pause_btn.configure(state="normal")
+        else:
+            item.play_pause_btn.configure(text="▶", state="normal")
+
+        item.stop_btn.configure(state="normal")
+        item.delete_btn.configure(state="normal")
 
     def _show_fullscreen_alert(self, item: TimerItem) -> None:
         if self.current_alert_window and self.current_alert_window.winfo_exists():
@@ -666,28 +979,32 @@ class TimerApp:
             return
 
         try:
-            end_time, parsed_mode, normalized_value = self._parse_time_input(value)
+            parsed = self._parse_time_input(value)
         except ValueError as exc:
             self.error_var.set(str(exc))
             return
 
         self.error_var.set("")
-        item.end_time = end_time
-        item.paused_remaining = 0
-        item.state = "Running"
+        item.input_mode = str(parsed["mode"])
         item.finished_at = None
         item.alerted = False
-        item.input_mode = parsed_mode
-        if parsed_mode == "absolute":
-            item.preset_absolute = normalized_value
-            item.preset_relative = None
+        item.last_tick_epoch = time.time()
+
+        if item.input_mode == "absolute":
+            item.target_epoch = float(parsed["target_epoch"])
+            item.target_hhmm = str(parsed["normalized"])
+            item.remaining_seconds = 0.0
+            item.initial_seconds = 0
+            item.state = "Running"
         else:
-            item.preset_relative = normalized_value
-            item.preset_absolute = None
-        if item.state_var:
-            item.state_var.set(item.state)
-        if item.end_var:
-            item.end_var.set(self._format_end_time(item.end_time))
+            secs = int(parsed["seconds"])
+            item.initial_seconds = secs
+            item.remaining_seconds = float(secs)
+            item.target_epoch = None
+            item.target_hhmm = None
+            item.state = "Running"
+
+        self._refresh_row(item)
         self._mark_dirty()
         self._close_reset_dialog()
 
@@ -705,19 +1022,17 @@ class TimerApp:
 
     def _build_reset_initial_value(self, item: TimerItem, source_mode: str) -> str:
         if source_mode == "absolute":
-            if item.preset_absolute:
-                return item.preset_absolute
-            if item.end_time:
-                return item.end_time.strftime("%H:%M")
+            if item.target_hhmm:
+                return item.target_hhmm
+            if item.target_epoch is not None:
+                return dt.datetime.fromtimestamp(item.target_epoch).strftime("%H:%M")
             return dt.datetime.now().strftime("%H:%M")
 
-        if item.preset_relative:
-            return item.preset_relative
-        if item.state == "Paused":
-            return self._format_relative_input(item.paused_remaining)
-        if item.state == "Running" and item.end_time:
-            remaining = max(0, int((item.end_time - dt.datetime.now()).total_seconds()))
-            return self._format_relative_input(remaining)
+        if item.input_mode == "relative":
+            seconds = int(max(0, item.remaining_seconds if item.state != "Stopped" else item.initial_seconds))
+            return self._format_relative_input(seconds)
+
+        # absolute timer's Remaining edit defaults to 30s relative timer creation.
         return "0:30"
 
     def _mark_dirty(self) -> None:
@@ -732,14 +1047,14 @@ class TimerApp:
         return {
             "timer_id": item.timer_id,
             "label": item.label,
+            "input_mode": item.input_mode,
             "state": item.state,
-            "end_time": item.end_time.isoformat() if item.end_time else None,
-            "paused_remaining": item.paused_remaining,
+            "target_epoch": item.target_epoch,
+            "target_hhmm": item.target_hhmm,
+            "remaining_seconds": int(max(0, round(item.remaining_seconds))),
+            "initial_seconds": item.initial_seconds,
             "finished_at": item.finished_at.isoformat() if item.finished_at else None,
             "alerted": item.alerted,
-            "input_mode": item.input_mode,
-            "preset_relative": item.preset_relative,
-            "preset_absolute": item.preset_absolute,
         }
 
     def _save_state(self) -> None:
@@ -748,7 +1063,12 @@ class TimerApp:
                 self._serialize_timer(self.timers[tid])
                 for tid in self.timer_order
                 if tid in self.timers
-            ]
+            ],
+            "trash": [
+                self._serialize_timer(self.trash_timers[tid])
+                for tid in self.trash_order
+                if tid in self.trash_timers
+            ],
         }
         tmp_path = self.state_path.with_suffix(".tmp")
         try:
@@ -767,6 +1087,98 @@ class TimerApp:
         except ValueError:
             return None
 
+    @staticmethod
+    def _parse_relative_text(value: str | None) -> int:
+        if not value:
+            return 0
+        m = RELATIVE_COLON_RE.match(value)
+        if not m:
+            return 0
+        minutes = int(m.group(1))
+        seconds = int(m.group(2))
+        if seconds > 59:
+            return 0
+        return max(0, (minutes * 60) + seconds)
+
+    def _deserialize_timer(self, entry: dict[str, object]) -> TimerItem | None:
+        timer_id = entry.get("timer_id")
+        if not isinstance(timer_id, str) or not timer_id:
+            timer_id = str(uuid4())
+
+        label = entry.get("label")
+        if not isinstance(label, str) or not label:
+            return None
+
+        mode = entry.get("input_mode")
+        input_mode = mode if mode in {"relative", "absolute"} else "relative"
+
+        item = TimerItem(timer_id=timer_id, label=label, input_mode=input_mode)
+
+        raw_state = entry.get("state")
+        if isinstance(raw_state, str) and raw_state in {"Running", "Paused", "Stopped", "Finished"}:
+            item.state = raw_state
+        elif isinstance(raw_state, str) and raw_state in {"Running", "Paused", "Finished"}:
+            item.state = raw_state
+        else:
+            item.state = "Stopped"
+
+        item.finished_at = self._parse_iso_dt(entry.get("finished_at"))
+        item.alerted = bool(entry.get("alerted", False))
+
+        if input_mode == "absolute":
+            target_epoch = entry.get("target_epoch")
+            if isinstance(target_epoch, (int, float)):
+                item.target_epoch = float(target_epoch)
+            else:
+                old_end = self._parse_iso_dt(entry.get("end_time"))
+                if old_end:
+                    item.target_epoch = old_end.timestamp()
+
+            target_hhmm = entry.get("target_hhmm")
+            if isinstance(target_hhmm, str):
+                item.target_hhmm = target_hhmm
+            else:
+                preset_absolute = entry.get("preset_absolute")
+                if isinstance(preset_absolute, str):
+                    item.target_hhmm = preset_absolute
+                elif item.target_epoch is not None:
+                    item.target_hhmm = dt.datetime.fromtimestamp(item.target_epoch).strftime("%H:%M")
+
+            if item.state == "Paused":
+                item.state = "Stopped"
+
+        else:
+            initial_seconds = entry.get("initial_seconds")
+            if isinstance(initial_seconds, (int, float)):
+                item.initial_seconds = int(max(0, initial_seconds))
+            else:
+                item.initial_seconds = self._parse_relative_text(entry.get("preset_relative") if isinstance(entry.get("preset_relative"), str) else None)
+
+            remaining_seconds = entry.get("remaining_seconds")
+            if isinstance(remaining_seconds, (int, float)):
+                item.remaining_seconds = float(max(0, remaining_seconds))
+            else:
+                paused_remaining = entry.get("paused_remaining")
+                if isinstance(paused_remaining, (int, float)):
+                    item.remaining_seconds = float(max(0, paused_remaining))
+                else:
+                    old_end = self._parse_iso_dt(entry.get("end_time"))
+                    if old_end:
+                        item.remaining_seconds = float(max(0, int((old_end - dt.datetime.now()).total_seconds())))
+
+            if item.initial_seconds <= 0:
+                item.initial_seconds = int(max(1, round(item.remaining_seconds)))
+
+            if item.state == "Running":
+                item.last_tick_epoch = time.time()
+            elif item.state == "Paused":
+                item.last_tick_epoch = None
+
+        if item.input_mode == "absolute" and item.target_epoch is None:
+            return None
+
+        return item
+
     def _load_state(self) -> None:
         if not self.state_path.exists():
             return
@@ -779,41 +1191,35 @@ class TimerApp:
         if not isinstance(timers, list):
             return
 
+        trash = payload.get("trash")
+        if not isinstance(trash, list):
+            trash = []
+
+        seen_ids: set[str] = set()
+
         for entry in timers:
             if not isinstance(entry, dict):
                 continue
-            timer_id = entry.get("timer_id")
-            if not isinstance(timer_id, str) or not timer_id:
-                timer_id = str(uuid4())
-            if timer_id in self.timers:
-                timer_id = str(uuid4())
-
-            label = entry.get("label")
-            state = entry.get("state")
-            if not isinstance(label, str) or not isinstance(state, str):
+            item = self._deserialize_timer(entry)
+            if not item:
                 continue
-
-            item = TimerItem(
-                timer_id=timer_id,
-                label=label,
-                state=state if state in {"Running", "Paused", "Finished"} else "Paused",
-                end_time=self._parse_iso_dt(entry.get("end_time")),
-                paused_remaining=int(entry.get("paused_remaining", 0) or 0),
-                finished_at=self._parse_iso_dt(entry.get("finished_at")),
-                alerted=bool(entry.get("alerted", False)),
-                input_mode=entry.get("input_mode", "relative") if entry.get("input_mode") in {"relative", "absolute"} else "relative",
-                preset_relative=entry.get("preset_relative") if isinstance(entry.get("preset_relative"), str) else None,
-                preset_absolute=entry.get("preset_absolute") if isinstance(entry.get("preset_absolute"), str) else None,
-            )
-
-            # Guard against inconsistent state.
-            if item.state == "Running" and item.end_time is None:
-                item.state = "Paused"
-                item.paused_remaining = max(0, item.paused_remaining)
-
+            while item.timer_id in seen_ids:
+                item.timer_id = str(uuid4())
+            seen_ids.add(item.timer_id)
             self.timers[item.timer_id] = item
             self.timer_order.append(item.timer_id)
-            self._create_row(item)
+
+        for entry in trash:
+            if not isinstance(entry, dict):
+                continue
+            item = self._deserialize_timer(entry)
+            if not item:
+                continue
+            while item.timer_id in seen_ids:
+                item.timer_id = str(uuid4())
+            seen_ids.add(item.timer_id)
+            self.trash_timers[item.timer_id] = item
+            self.trash_order.append(item.timer_id)
 
         self.state_dirty = False
 
@@ -833,16 +1239,10 @@ class TimerApp:
         m, s = divmod(rem, 60)
         return f"{h:02d}:{m:02d}:{s:02d}"
 
-    @staticmethod
-    def _format_end_time(end_time: dt.datetime | None) -> str:
-        if end_time is None:
-            return "--:--"
-        return end_time.strftime("%H:%M")
-
 
 def main() -> None:
     root = tk.Tk()
-    app = TimerApp(root)
+    _app = TimerApp(root)
     root.mainloop()
 
 
