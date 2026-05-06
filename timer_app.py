@@ -925,6 +925,19 @@ class TimerApp:
         if target_tab_id == TRASH_TAB_ID:
             self._remove_pending_alert(timer_id)
             item.alerted = False
+            item.finished_at = None
+            item.state = "Stopped"
+            item.last_tick_epoch = None
+            if item.input_mode == "relative":
+                item.remaining_seconds = float(item.initial_seconds)
+        elif source_tab_id == TRASH_TAB_ID:
+            self._remove_pending_alert(timer_id)
+            item.alerted = False
+            item.finished_at = None
+            item.state = "Stopped"
+            item.last_tick_epoch = None
+            if item.input_mode == "relative":
+                item.remaining_seconds = float(item.initial_seconds)
         if self.reset_target_timer_id == timer_id and target_tab_id == TRASH_TAB_ID:
             self._close_reset_dialog()
         if self.settings_target_timer_id == timer_id and target_tab_id == TRASH_TAB_ID:

@@ -140,8 +140,10 @@ The settings dialog currently handles repeat-related configuration.
 
 ## 11. Delete, Trash, and Restore
 - `ⓧ`: soft delete to `Trash`
+- Moving a timer to `Trash` clears its running state and pending-alert state
 - When a timer enters `Trash`, the app remembers the last normal tab it came from
 - `Trash` `↩`: restore to the remembered previous tab
+- Restored timers come back in stopped state (`Stopped`)
 - If that tab no longer exists, restore to `General`
 - `Trash` `🗑`: permanently delete that timer
 - `Empty Trash`: clear all trashed timers
