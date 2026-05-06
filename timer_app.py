@@ -106,7 +106,7 @@ class TimerApp:
         self.timers: dict[str, TimerItem] = {}
         self.timer_order_by_tab: dict[str, list[str]] = {}
 
-        self.pending_alerts: list[TimerItem] = []
+        self.pending_alert_ids: list[str] = []
         self.current_alert_window: tk.Toplevel | None = None
         self.current_alert_timer: TimerItem | None = None
         self.alert_key_bindings: list[tuple[str, str]] = []
@@ -126,6 +126,8 @@ class TimerApp:
         self.add_label_entry: ttk.Entry | None = None
         self.add_time_entry: ttk.Entry | None = None
         self.error_label_widget: ttk.Label | None = None
+        self.error_frame: ttk.Frame | None = None
+        self.table_header_frame: ttk.Frame | None = None
         self.main_controls_frame: ttk.Frame | None = None
         self.trash_controls_frame: ttk.Frame | None = None
         self.empty_trash_btn: ttk.Button | None = None
@@ -133,7 +135,7 @@ class TimerApp:
 
         self.tab_widgets: dict[str, tk.Widget] = {}
         self.dragging_tab_id: str | None = None
-        self.tab_plus_btn: tk.Button | None = None
+        self.tab_plus_btn: ttk.Button | None = None
         self.dragging_timer_id: str | None = None
         self.drop_effect_job: str | None = None
         self.tab_hover_job: str | None = None
@@ -142,6 +144,7 @@ class TimerApp:
         self.input_var = tk.StringVar()
         self.label_input_var = tk.StringVar(value="Timer")
         self.error_var = tk.StringVar(value="")
+        self.error_var.trace_add("write", self._on_error_message_changed)
 
         self._reset_tabs()
         self._build_ui()
@@ -175,11 +178,24 @@ class TimerApp:
         self.tab_strip_frame = ttk.Frame(tabs_outer)
         self.tab_strip_frame.grid(row=0, column=0, sticky="we")
         self.tab_strip_frame.columnconfigure(0, weight=1)
-        self.tab_strip_inner = ttk.Frame(self.tab_strip_frame)
-        self.tab_strip_inner.pack(fill="x")
+        self.tab_strip_canvas = tk.Canvas(self.tab_strip_frame, highlightthickness=0, height=40)
+        self.tab_strip_canvas.pack(fill="x", expand=True)
+        self.tab_strip_scrollbar = ttk.Scrollbar(
+            self.tab_strip_frame,
+            orient="horizontal",
+            command=self.tab_strip_canvas.xview,
+        )
+        self.tab_strip_scrollbar.pack(fill="x")
+        self.tab_strip_canvas.configure(xscrollcommand=self.tab_strip_scrollbar.set)
+        self.tab_strip_inner = ttk.Frame(self.tab_strip_canvas)
+        self.tab_strip_canvas_window = self.tab_strip_canvas.create_window((0, 0), window=self.tab_strip_inner, anchor="nw")
+        self.tab_strip_inner.bind("<Configure>", self._on_tab_strip_inner_configure)
+        self.tab_strip_canvas.bind("<Configure>", self._on_tab_strip_canvas_configure)
 
         self.tab_actions_frame = ttk.Frame(tabs_outer)
         self.tab_actions_frame.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self.tab_plus_btn = ttk.Button(self.tab_actions_frame, text="+", width=3, command=self.create_new_tab)
+        self.tab_plus_btn.pack(side="left", padx=(0, 6))
         self.delete_tab_btn = ttk.Button(self.tab_actions_frame, text="Delete Tab", command=self.delete_selected_tab)
         self.delete_tab_btn.pack(side="left")
 
@@ -206,11 +222,27 @@ class TimerApp:
         self.empty_trash_btn = ttk.Button(trash_frame, text="Empty Trash", command=self.empty_trash)
         self.empty_trash_btn.pack(side="left", padx=(8, 0))
 
-        error_label = ttk.Label(container, textvariable=self.error_var, foreground="red")
-        error_label.pack(fill="x", pady=(0, 6))
+        error_frame = ttk.Frame(container)
+        error_label = ttk.Label(error_frame, textvariable=self.error_var, foreground="red")
+        error_label.pack(side="left", fill="x", expand=True)
+        tk.Button(
+            error_frame,
+            text="×",
+            relief="flat",
+            bd=0,
+            fg="#a33",
+            padx=2,
+            pady=0,
+            cursor="hand2",
+            command=self._clear_error_message,
+        ).pack(side="right")
+        error_frame.pack(fill="x", pady=(0, 6))
         self.error_label_widget = error_label
+        self.error_frame = error_frame
+        self._on_error_message_changed()
 
         header = ttk.Frame(container)
+        self.table_header_frame = header
         header.pack(fill="x")
         for idx, min_w in enumerate(COLUMN_WIDTHS):
             header.grid_columnconfigure(idx, minsize=min_w)
@@ -257,6 +289,12 @@ class TimerApp:
         if self.canvas.winfo_exists():
             self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
+    def _on_tab_strip_inner_configure(self, _event: tk.Event) -> None:
+        self.tab_strip_canvas.configure(scrollregion=self.tab_strip_canvas.bbox("all"))
+
+    def _on_tab_strip_canvas_configure(self, event: tk.Event) -> None:
+        self.tab_strip_canvas.itemconfigure(self.tab_strip_canvas_window, height=event.height)
+
     def _all_tab_ids(self) -> list[str]:
         return [GENERAL_TAB_ID, *self.user_tab_order, TRASH_TAB_ID]
 
@@ -273,24 +311,10 @@ class TimerApp:
         for child in self.tab_strip_inner.winfo_children():
             child.destroy()
         self.tab_widgets = {}
-        self.tab_plus_btn = None
 
         self._create_tab_button(self.tab_strip_inner, GENERAL_TAB_ID)
         for tab_id in self.user_tab_order:
             self._create_tab_button(self.tab_strip_inner, tab_id)
-
-        plus = tk.Button(
-            self.tab_strip_inner,
-            text="+",
-            command=self.create_new_tab,
-            relief="groove",
-            bd=1,
-            padx=10,
-            pady=4,
-            cursor="hand2",
-        )
-        plus.pack(side="left", padx=(2, 6))
-        self.tab_plus_btn = plus
 
         self._create_tab_button(self.tab_strip_inner, TRASH_TAB_ID)
 
@@ -328,15 +352,15 @@ class TimerApp:
             if is_trash and self.main_controls_frame.winfo_manager():
                 self.main_controls_frame.pack_forget()
             elif not is_trash and not self.main_controls_frame.winfo_manager():
-                if self.error_label_widget and self.error_label_widget.winfo_exists():
-                    self.main_controls_frame.pack(fill="x", pady=(0, 6), before=self.error_label_widget)
+                if self.table_header_frame and self.table_header_frame.winfo_exists():
+                    self.main_controls_frame.pack(fill="x", pady=(0, 6), before=self.table_header_frame)
                 else:
                     self.main_controls_frame.pack(fill="x", pady=(0, 6))
 
         if self.trash_controls_frame:
             if is_trash and not self.trash_controls_frame.winfo_manager():
-                if self.error_label_widget and self.error_label_widget.winfo_exists():
-                    self.trash_controls_frame.pack(fill="x", pady=(0, 6), before=self.error_label_widget)
+                if self.table_header_frame and self.table_header_frame.winfo_exists():
+                    self.trash_controls_frame.pack(fill="x", pady=(0, 6), before=self.table_header_frame)
                 else:
                     self.trash_controls_frame.pack(fill="x", pady=(0, 6))
             elif not is_trash and self.trash_controls_frame.winfo_manager():
@@ -456,9 +480,6 @@ class TimerApp:
                 continue
             widget.pack_forget()
             widget.pack(side="left", padx=(0, 4))
-        if self.tab_plus_btn and self.tab_plus_btn.winfo_exists():
-            self.tab_plus_btn.pack_forget()
-            self.tab_plus_btn.pack(side="left", padx=(2, 6))
         if trash and trash.winfo_exists():
             trash.pack_forget()
             trash.pack(side="left", padx=(0, 4))
@@ -902,7 +923,7 @@ class TimerApp:
         if self.current_alert_timer and self.current_alert_timer.timer_id == timer_id and target_tab_id == TRASH_TAB_ID:
             self._dismiss_alert()
         if target_tab_id == TRASH_TAB_ID:
-            self.pending_alerts = [t for t in self.pending_alerts if t.timer_id != timer_id]
+            self._remove_pending_alert(timer_id)
             item.alerted = False
         if self.reset_target_timer_id == timer_id and target_tab_id == TRASH_TAB_ID:
             self._close_reset_dialog()
@@ -964,6 +985,21 @@ class TimerApp:
         if not item:
             return
         self._set_row_lifted(item, False)
+
+    def _clear_error_message(self) -> None:
+        self.error_var.set("")
+
+    def _on_error_message_changed(self, *_args: object) -> None:
+        if not self.error_frame or not self.error_frame.winfo_exists():
+            return
+        has_error = bool(self.error_var.get().strip())
+        if has_error and not self.error_frame.winfo_manager():
+            if self.table_header_frame and self.table_header_frame.winfo_exists():
+                self.error_frame.pack(fill="x", pady=(0, 6), before=self.table_header_frame)
+            else:
+                self.error_frame.pack(fill="x", pady=(0, 6))
+        elif not has_error and self.error_frame.winfo_manager():
+            self.error_frame.pack_forget()
 
     def _sync_label(self, timer_id: str) -> None:
         item = self.timers.get(timer_id)
@@ -1098,9 +1134,11 @@ class TimerApp:
             if item.tab_id == self.selected_tab_id:
                 self._refresh_row(item)
 
-        if not self.current_alert_window and self.pending_alerts:
-            next_item = self.pending_alerts.pop(0)
-            if next_item.timer_id in self.timers and next_item.alerted:
+        self._sync_alert_queue()
+        if not self.current_alert_window and self.pending_alert_ids:
+            next_timer_id = self.pending_alert_ids.pop(0)
+            next_item = self.timers.get(next_timer_id)
+            if next_item and next_item.alerted and next_item.tab_id != TRASH_TAB_ID:
                 self._show_fullscreen_alert(next_item)
 
         self.root.after(200, self._tick)
@@ -1157,11 +1195,11 @@ class TimerApp:
             return
         item.alerted = True
         item.finished_at = finished_dt
-        if not any(p.timer_id == item.timer_id for p in self.pending_alerts):
-            self.pending_alerts.append(item)
+        if item.timer_id not in self.pending_alert_ids:
+            self.pending_alert_ids.append(item.timer_id)
 
     def _remove_pending_alert(self, timer_id: str) -> None:
-        self.pending_alerts = [t for t in self.pending_alerts if t.timer_id != timer_id]
+        self.pending_alert_ids = [tid for tid in self.pending_alert_ids if tid != timer_id]
 
     def _next_absolute_epoch(self, item: TimerItem, from_dt: dt.datetime | None = None) -> float:
         reference = from_dt or dt.datetime.now()
@@ -1232,7 +1270,29 @@ class TimerApp:
     def _is_alert_visible_or_pending(self, item: TimerItem) -> bool:
         if self.current_alert_timer and self.current_alert_timer.timer_id == item.timer_id:
             return True
-        return any(p.timer_id == item.timer_id for p in self.pending_alerts)
+        return item.timer_id in self.pending_alert_ids
+
+    def _sync_alert_queue(self) -> None:
+        queued: list[str] = []
+        seen: set[str] = set()
+        for timer_id in self.pending_alert_ids:
+            if timer_id in seen:
+                continue
+            seen.add(timer_id)
+            item = self.timers.get(timer_id)
+            if not item or item.tab_id == TRASH_TAB_ID or not item.alerted:
+                continue
+            queued.append(timer_id)
+        self.pending_alert_ids = queued
+
+        current_timer_id = self.current_alert_timer.timer_id if self.current_alert_timer else None
+        for timer_id, item in self.timers.items():
+            if item.tab_id == TRASH_TAB_ID or not item.alerted:
+                continue
+            if timer_id == current_timer_id or timer_id in seen:
+                continue
+            self.pending_alert_ids.append(timer_id)
+            seen.add(timer_id)
 
     def _display_end(self, item: TimerItem) -> str:
         if item.input_mode == "absolute":

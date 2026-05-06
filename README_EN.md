@@ -24,9 +24,10 @@ python timer_app.py
 ## 4. UI Layout
 ### Tab strip
 - System tab `General` on the far left
-- User-created tabs in the middle
-- `+` button near the right
-- System tab `Trash` on the far right
+- User-created tabs in the middle (horizontally scrollable)
+- Horizontal scrollbar under the tab strip
+- `+` button in the right action area (always visible)
+- System tab `Trash` at the right edge of the tab list
 
 ### Normal tabs (`General` / user tabs)
 - Top controls
@@ -54,6 +55,7 @@ python timer_app.py
 - Press `+` to create a new user tab.
 - The default name is `New Tab`.
 - Duplicate tab names are allowed.
+- Even with many tabs, `+` stays available in the action area.
 
 ### Select
 - Single-click a tab to select it and show its contents.
@@ -154,8 +156,16 @@ Dismiss by:
 
 Note:
 - Even with relative repeat enabled, identical alerts for the same timer are deduplicated
+- Invalid alert queue entries (deleted/moved-to-trash timer IDs) are pruned before alert display.
+- After wake-from-sleep, active timers are re-evaluated and overdue timers are still eligible for alerts.
+- A relative repeat timer still alerts correctly after `Stop` and restart.
 
-## 13. Autosave / Restore
+## 13. Error Message
+- A small `×` button appears at the right side of the red error message.
+- Press `×` to dismiss the current error message.
+- If a new error occurs later, the message is shown again.
+
+## 14. Autosave / Restore
 - File: `timer_state.json`
 - Saved by periodic autosave and on close
 - Restored at startup
@@ -174,7 +184,7 @@ When loading an old state file that only has `timers` and `trash`:
 - active timers are migrated into `General`
 - trashed timers are migrated into `Trash`
 
-## 14. Files
+## 15. Files
 - `timer_app.py`: main app
 - `timer_state.json`: persisted state
 - `README.md`: Japanese manual
