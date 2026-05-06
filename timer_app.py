@@ -127,6 +127,7 @@ class TimerApp:
         self.add_time_entry: ttk.Entry | None = None
         self.error_label_widget: ttk.Label | None = None
         self.error_frame: ttk.Frame | None = None
+        self.table_header_frame: ttk.Frame | None = None
         self.main_controls_frame: ttk.Frame | None = None
         self.trash_controls_frame: ttk.Frame | None = None
         self.empty_trash_btn: ttk.Button | None = None
@@ -241,6 +242,7 @@ class TimerApp:
         self._on_error_message_changed()
 
         header = ttk.Frame(container)
+        self.table_header_frame = header
         header.pack(fill="x")
         for idx, min_w in enumerate(COLUMN_WIDTHS):
             header.grid_columnconfigure(idx, minsize=min_w)
@@ -350,15 +352,15 @@ class TimerApp:
             if is_trash and self.main_controls_frame.winfo_manager():
                 self.main_controls_frame.pack_forget()
             elif not is_trash and not self.main_controls_frame.winfo_manager():
-                if self.error_frame and self.error_frame.winfo_exists():
-                    self.main_controls_frame.pack(fill="x", pady=(0, 6), before=self.error_frame)
+                if self.table_header_frame and self.table_header_frame.winfo_exists():
+                    self.main_controls_frame.pack(fill="x", pady=(0, 6), before=self.table_header_frame)
                 else:
                     self.main_controls_frame.pack(fill="x", pady=(0, 6))
 
         if self.trash_controls_frame:
             if is_trash and not self.trash_controls_frame.winfo_manager():
-                if self.error_frame and self.error_frame.winfo_exists():
-                    self.trash_controls_frame.pack(fill="x", pady=(0, 6), before=self.error_frame)
+                if self.table_header_frame and self.table_header_frame.winfo_exists():
+                    self.trash_controls_frame.pack(fill="x", pady=(0, 6), before=self.table_header_frame)
                 else:
                     self.trash_controls_frame.pack(fill="x", pady=(0, 6))
             elif not is_trash and self.trash_controls_frame.winfo_manager():
@@ -992,7 +994,10 @@ class TimerApp:
             return
         has_error = bool(self.error_var.get().strip())
         if has_error and not self.error_frame.winfo_manager():
-            self.error_frame.pack(fill="x", pady=(0, 6))
+            if self.table_header_frame and self.table_header_frame.winfo_exists():
+                self.error_frame.pack(fill="x", pady=(0, 6), before=self.table_header_frame)
+            else:
+                self.error_frame.pack(fill="x", pady=(0, 6))
         elif not has_error and self.error_frame.winfo_manager():
             self.error_frame.pack_forget()
 
