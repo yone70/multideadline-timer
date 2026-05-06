@@ -140,8 +140,10 @@ python timer_app.py
 
 ## 11. 削除・Trash・復元
 - `ⓧ`: soft delete（`Trash` タブへ移動）
+- `Trash` へ移動した時点で、そのタイマーの実行状態と alert 待ち状態はクリアされます
 - タイマーが Trash に入ると、直前にいた通常タブを記録します
 - `Trash` の `↩`: 記録された元タブへ復元
+- 復元後のタイマーは停止状態（Stopped）で戻ります
 - 元タブがもう存在しない場合は `General` へ復元
 - `Trash` の `🗑`: その項目を完全削除
 - `Empty Trash`: Trash を全削除
